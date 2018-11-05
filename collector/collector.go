@@ -39,44 +39,17 @@ import (
 	"flag"
 
 	log "github.com/golang/glog"
-	//"github.com/golang/protobuf/proto"
 	"github.com/jipanyang/gnmi/cli"
 	"github.com/openconfig/gnmi/client"
 	"github.com/openconfig/gnmi/client/flags"
 	"github.com/openconfig/gnmi/ctree"
 	"golang.org/x/crypto/ssh/terminal"
-
-	//gpb "github.com/openconfig/gnmi/proto/gnmi"
-
 	// Register supported client types.
 	gclient "github.com/jipanyang/gnmi/client/gnmi"
 	"github.com/confluentinc/confluent-kafka-go/kafka"
 )
 
 const layout = "2006-01-02-15:04:05.000000000"
-//
-// type Config struct {
-// 	PollingInterval   time.Duration // Duration between polling events.
-// 	StreamingDuration time.Duration // Duration to collect updates, 0 is forever.
-// 	Count             uint          // Number of polling/streaming events, 0 is infinite.
-// 	countExhausted    bool          // Trigger to indicate termination.
-// 	Delimiter         string        // Delimiter between path elements when converted to string.
-// 	Display           func([]byte)  // Function called to display each result.
-// 	DisplayPrefix     string        // Prefix for each line of result output.
-// 	DisplayIndent     string        // Indent per nesting level of result output.
-// 	DisplayType       string        // Display results in selected format, grouped, single, proto, graph.
-// 	DisplayPeer       bool          // Display the immediate connected peer.
-// 	// <empty string> - disable timestamp
-// 	// on - human readable timestamp according to layout
-// 	// raw - int64 nanos since epoch
-// 	// <FORMAT> - human readable timestamp according to <FORMAT>
-// 	Timestamp     string // Formatting of timestamp in result output.
-// 	DisplaySize   bool
-// 	Latency       bool     // Show latency to client
-// 	ClientTypes   []string // List of client types to try.
-// 	Concurrent    uint     // Number of concurrent client connections to server, for graph display type only.
-// 	ConcurrentMax uint     // Double number of concurrent client connections until MaxConcurrent reached.
-// }
 
 
 var (
@@ -88,10 +61,12 @@ var (
 		os.Stdout.Write(append(b, '\n'))
 	}}
 	stream = "s"
-	queryList = [1]string{"COUNTERS/Ethernet*/Queues"}
+	bootstrap_server = "localhost:9093"
+	topic = "gnmi"
+
 	clientTypes = flags.NewStringList(&cfg.ClientTypes, []string{gclient.Type})
-	queryFlag   = &queryList //&flags.StringList{}
-	queryType   = &stream//flag.String("query_type", client.Once.String(), "Type of result, one of: (o, once, p, polling, s, streaming).")
+	queryFlag   = &flags.StringList{}
+	queryType   = &stream
 	queryAddr   = flags.NewStringList(&q.Addrs, nil)
 
 	reqProto = flag.String("proto", "", "Text proto for gNMI request.")
@@ -110,7 +85,7 @@ var (
 
 func init() {
 	flag.Var(clientTypes, "client_types", fmt.Sprintf("List of explicit client types to attempt, one of: %s.", strings.Join(client.RegisteredImpls(), ", ")))
-	//flag.Var(queryFlag, "query", "Comma separated list of queries.  Each query is a delimited list of OpenConfig path nodes which may also be specified as a glob (*).  The delimeter can be specified with the --delimiter flag.")
+	flag.Var(queryFlag, "query", "Comma separated list of queries.  Each query is a delimited list of OpenConfig path nodes which may also be specified as a glob (*).  The delimeter can be specified with the --delimiter flag.")
 	// Query command-line flags.
 	flag.Var(queryAddr, "address", "Address of the GNMI target to query.")
 	flag.BoolVar(&q.UpdatesOnly, "updates_only", false, "Only stream updates, not the initial sync. Setting this flag for once or polling queries will cause nothing to be returned.")
@@ -135,7 +110,7 @@ func init() {
 
 	// Shortcut flags that can be used in place of the longform flags above.
 	flag.Var(queryAddr, "a", "Short for address.")
-	//flag.Var(queryFlag, "q", "Short for query.")
+	flag.Var(queryFlag, "q", "Short for query.")
 	flag.StringVar(&q.Target, "t", q.Target, "Short for target.")
 	flag.BoolVar(&q.UpdatesOnly, "u", q.UpdatesOnly, "Short for updates_only.")
 	flag.UintVar(&cfg.Count, "c", cfg.Count, "Short for count.")
@@ -200,7 +175,7 @@ func main() {
 
 	var err error
 	switch {
-	default: // gnmi.Subscribe
+	default:
 		err = executeSubscribe(ctx)
 	}
 	if err != nil {
@@ -246,6 +221,10 @@ func executeSubscribe(ctx context.Context) error {
 	return displayStreamingResults(ctx, q, &cfg)
 }
 
+type HostConfig struct {
+	host string
+}
+
 func displayStreamingResults(ctx context.Context, query client.Query, cfg *cli.Config) error {
 	c := client.New()
 	complete := false
@@ -265,7 +244,8 @@ func displayStreamingResults(ctx context.Context, query client.Query, cfg *cli.C
 			cfg.Display([]byte(fmt.Sprintf("Error: failed to marshal result: %v", err)))
 			return
 		}
-		cfg.Display(result)
+		println("updated msg")
+		produceMessage(result)
 	}
 	query.NotificationHandler = func(n client.Notification) error {
 		switch v := n.(type) {
@@ -329,8 +309,7 @@ func displayWalk(target string, c *client.CacheClient, cfg *cli.Config) {
 		cfg.Display([]byte(fmt.Sprintf("Error: failed to marshal result: %v", err)))
 		return
 	}
-	cfg.Display(result)
-	//println(result)
+	println("first msg")
 	produceMessage(result)
 
 
@@ -353,12 +332,13 @@ func produceMessage(result []byte){
 	// .Events channel is used.
 	deliveryChan := make(chan kafka.Event)
 
-	topic := "test"
-	//value := "Hello Go!"
+
+	fmt.Printf(q.Addrs[0])
 	err = p.Produce(&kafka.Message{
 		TopicPartition: kafka.TopicPartition{Topic: &topic, Partition: kafka.PartitionAny},
 		Value:          result,
-		//Headers:        []kafka.Header{{Key: "myTestHeader", Value: []byte("header values are binary")}},
+		Key: []byte(q.Addrs[0]),
+		//Headers:        []kafka.Header{{Key: , Value: []byte("header values are binary")}},
 	}, deliveryChan)
 
 	e := <-deliveryChan
